@@ -1,0 +1,39 @@
+{
+  "directories": {
+    "characters": "./assets/characters/videos",
+    "audio": "./assets/audio/source",
+    "scripts": "./assets/scripts",
+    "exports": {
+      "horizontal": "./assets/exports/horizontal",
+      "vertical": "./assets/exports/vertical"
+    },
+    "temp": "./assets/temp"
+  },
+  
+  "sync": {
+    "model": "lipsync-2",
+    "syncMode": "cut_off",
+    "timeout": 300000,
+    "maxRetries": 3
+  },
+  
+  "video": {
+    "defaultQuality": "high",
+    "horizontalResolution": "1920x1080",
+    "verticalResolution": "1080x1920",
+    "format": "mp4",
+    "codec": "libx264"
+  },
+  
+  "audio": {
+    "format": "wav",
+    "sampleRate": 44100,
+    "channels": 1
+  },
+  
+  "processing": {
+    "batchSize": 3,
+    "concurrentJobs": 2,
+    "cleanup": true
+  }
+}

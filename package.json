@@ -1,0 +1,35 @@
+{
+  "name": "millennial-tarot-video-gen",
+  "version": "1.0.0",
+  "description": "AI video generator for Millennial Tarot content with lip-sync and character matching",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/cli.js",
+    "dev": "node --watch src/cli.js",
+    "test": "node --test test/**/*.test.js"
+  },
+  "keywords": [
+    "video",
+    "ai",
+    "lip-sync",
+    "tarot",
+    "automation"
+  ],
+  "author": "Millennial Tarot",
+  "license": "MIT",
+  "dependencies": {
+    "@sync.so/sdk": "^0.2.2",
+    "axios": "^1.6.0",
+    "commander": "^11.1.0",
+    "dotenv": "^17.2.1",
+    "dropbox": "^10.34.0",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "fs-extra": "^11.2.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0"
+  }
+}
