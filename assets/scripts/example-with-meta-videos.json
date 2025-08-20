@@ -1,0 +1,89 @@
+{
+  "meta": [
+    {
+      "type": "intro",
+      "name": "intro", 
+      "include": true,
+      "timing": {
+        "start": 0,
+        "duration": 1.5
+      },
+      "clip": {
+        "start": 0,
+        "duration": 1.5
+      },
+      "position": "replace"
+    },
+    {
+      "type": "outro",
+      "name": "outro",
+      "include": true,
+      "timing": {
+        "fromEnd": 2
+      },
+      "clip": {
+        "start": 3,
+        "duration": 2
+      },
+      "position": "replace"
+    },
+    {
+      "type": "cutaway",
+      "name": "intro",
+      "include": false,
+      "timing": {
+        "start": 10,
+        "duration": 2
+      },
+      "clip": {
+        "start": 1,
+        "duration": 2
+      },
+      "position": "replace"
+    }
+  ],
+  "dialogue": [
+  {
+    "video": "etsy1",
+    "end": 6,
+    "sync": true,
+    "dialogue": "The way this betch thinks she can manifest a brownstone when her sourdough starter’s in hospice."
+  },
+  {
+    "video": "empress1",
+    "end": 13,
+    "sync": true,
+    "dialogue": "Blind child dreams of grand estates, yet has not tended to the hearth she already possesses."
+  },
+  {
+    "video": "etsy2",
+    "end": 20,
+    "sync": true,
+    "dialogue": "For real. Babe — you can’t feng shui your way into a mortgage if you’ve got laundry chair energy."
+  },
+  {
+    "video": "empress2",
+    "end": 33,
+    "sync": true,
+    "dialogue": "Indeed. The Empress tends her domain with reverence. Every kingdom begins with a single, well-loved room."
+  },
+  {
+    "video": "etsy2",
+    "end": 45,
+    "sync": true,
+    "dialogue": "Totes. The Etsy Queen crafts that shit. Her dynasty’s built one thrifted frame and clearance-rack candle at a time."
+  },
+  {
+    "video": "empress3",
+    "end": 55,
+    "sync": true,
+    "dialogue": "Honor your dwelling, however modest, and the palace will reveal itself in due time."
+  },
+  {
+    "video": "etsy3",
+    "end": 69,
+    "sync": true,
+    "dialogue": "So yeah — big house energy starts with big vibe energy. Light a candle, fold the throw blanket, and act like Zillow’s watching."
+  }
+  ]
+}

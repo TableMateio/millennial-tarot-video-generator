@@ -8,10 +8,40 @@ import { Dropbox } from 'dropbox';
 import fs from 'fs-extra';
 import path from 'path';
 
+import { DropboxOAuth } from './DropboxOAuth.js';
+
 export class DropboxUploader {
   constructor(accessToken) {
-    this.accessToken = accessToken;
-    this.dbx = new Dropbox({ accessToken });
+    this.staticToken = accessToken;
+    this.oauth = new DropboxOAuth(
+      process.env.DROPBOX_CLIENT_ID,
+      process.env.DROPBOX_CLIENT_SECRET
+    );
+  }
+
+  /**
+   * Get a valid Dropbox client with fresh token
+   */
+  async getDropboxClient() {
+    try {
+      // Try OAuth first
+      if (process.env.DROPBOX_CLIENT_ID && process.env.DROPBOX_CLIENT_SECRET) {
+        const hasTokens = await this.oauth.hasValidTokens();
+        if (hasTokens) {
+          const accessToken = await this.oauth.getValidAccessToken();
+          return new Dropbox({ accessToken });
+        }
+      }
+      
+      // Fall back to static token
+      if (this.staticToken) {
+        return new Dropbox({ accessToken: this.staticToken });
+      }
+      
+      throw new Error('No valid Dropbox authentication available');
+    } catch (error) {
+      throw new Error(`Failed to get Dropbox client: ${error.message}`);
+    }
   }
 
   /**
@@ -31,8 +61,9 @@ export class DropboxUploader {
       // Read file content
       const fileContent = await fs.readFile(localFilePath);
       
-      // Upload file to Dropbox
-      const uploadResponse = await this.dbx.filesUpload({
+      // Get Dropbox client and upload file
+      const dbx = await this.getDropboxClient();
+      const uploadResponse = await dbx.filesUpload({
         path: uploadPath,
         contents: fileContent,
         mode: 'overwrite',
@@ -42,7 +73,7 @@ export class DropboxUploader {
       console.log(`✅ Upload completed: ${uploadResponse.result.name}`);
       
       // Generate temporary link (expires in 4 hours)
-      const tempLinkResponse = await this.dbx.filesGetTemporaryLink({
+      const tempLinkResponse = await dbx.filesGetTemporaryLink({
         path: uploadResponse.result.path_lower
       });
       
@@ -106,7 +137,8 @@ export class DropboxUploader {
       // Delete files in parallel
       const deletePromises = dropboxPaths.map(async (dropboxPath) => {
         try {
-          await this.dbx.filesDeleteV2({ path: dropboxPath });
+          const dbx = await this.getDropboxClient();
+          await dbx.filesDeleteV2({ path: dropboxPath });
           console.log(`🗑️  Deleted: ${path.basename(dropboxPath)}`);
         } catch (error) {
           console.warn(`⚠️  Failed to delete ${dropboxPath}:`, error.message);
@@ -126,7 +158,8 @@ export class DropboxUploader {
    */
   async testConnection() {
     try {
-      const accountInfo = await this.dbx.usersGetCurrentAccount();
+      const dbx = await this.getDropboxClient();
+      const accountInfo = await dbx.usersGetCurrentAccount();
       console.log(`✅ Dropbox connected as: ${accountInfo.result.name.display_name}`);
       return true;
     } catch (error) {

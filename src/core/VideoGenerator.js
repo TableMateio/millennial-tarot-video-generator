@@ -7,6 +7,7 @@ import { AudioSegmentation } from './AudioSegmentation.js';
 import { CharacterMatcher } from './CharacterMatcher.js';
 import { SyncAPI } from '../apis/SyncAPI.js';
 import { VideoProcessor } from './VideoProcessor.js';
+import { MetaVideoManager } from './MetaVideoManager.js';
 import fs from 'fs-extra';
 import path from 'path';
 
@@ -53,6 +54,11 @@ export class VideoGenerator {
     // Initialize video processor
     this.videoProcessor = new VideoProcessor(this.config.tempDirectory);
 
+    // Initialize meta video manager
+    this.metaVideoManager = await new MetaVideoManager({
+      metaVideosDirectory: this.config.metaVideosDirectory || './assets/meta-videos'
+    }).initialize();
+
     console.log('Video Generator initialized successfully');
     return this;
   }
@@ -70,12 +76,16 @@ export class VideoGenerator {
     try {
       console.log(`Starting video generation for: ${audioFile}`);
 
-      // Step 1: Parse audio segmentation
+      // Step 1: Parse audio segmentation with meta video support
       console.log('Step 1: Parsing audio segmentation...');
-      const audioSegments = new AudioSegmentation(audioFile, segmentation);
+      const audioSegments = await AudioSegmentation.parseWithMeta(audioFile, segmentation);
       const segments = audioSegments.getSegments();
+      const metaDefinitions = audioSegments.metaDefinitions;
       
       console.log(`Found ${segments.length} audio segments`);
+      if (metaDefinitions.length > 0) {
+        console.log(`Found ${metaDefinitions.length} meta video definitions`);
+      }
 
           // Step 2: Validate video-character mapping
     console.log('Step 2: Validating video-character mapping...');
@@ -93,9 +103,23 @@ export class VideoGenerator {
       console.log('Step 3: Extracting audio segments...');
       const audioSegmentPaths = await this.extractAudioSegments(audioFile, segments);
 
+      // Step 3.5: Process meta video definitions
+      let processedTimeline = segments;
+      if (metaDefinitions.length > 0) {
+        console.log('Step 3.5: Processing meta videos...');
+        const totalDuration = Math.max(...segments.map(s => s.endTime));
+        const processedMetaVideos = this.metaVideoManager.processMetaVideoDefinitions(metaDefinitions, totalDuration);
+        
+        if (processedMetaVideos.length > 0) {
+          console.log(`   Applying ${processedMetaVideos.length} meta videos to timeline`);
+          processedTimeline = this.metaVideoManager.applyMetaVideos(segments, processedMetaVideos, totalDuration);
+          console.log(`   Timeline now has ${processedTimeline.length} segments (including meta videos)`);
+        }
+      }
+
           // Step 4: Process segments (sync + non-sync)
     console.log('Step 4: Processing video segments...');
-    const processedResults = await this.processAllSegments(segments, audioSegmentPaths, options);
+    const processedResults = await this.processAllSegments(processedTimeline, audioSegmentPaths, options);
 
       // Step 5: Concatenate videos
       console.log('Step 5: Concatenating videos...');
@@ -434,6 +458,11 @@ export class VideoGenerator {
       characterMatcher: {
         initialized: !!this.characterMatcher,
         charactersFound: this.characterMatcher ? this.characterMatcher.getAvailableCharacters().length : 0
+      },
+      metaVideos: {
+        initialized: !!this.metaVideoManager,
+        metaVideosFound: this.metaVideoManager ? this.metaVideoManager.metaVideos.size : 0,
+        summary: this.metaVideoManager ? this.metaVideoManager.getMetaVideosSummary() : null
       },
       syncAPI: {
         initialized: !!this.syncAPI,

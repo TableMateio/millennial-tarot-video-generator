@@ -7,6 +7,35 @@ export class AudioSegmentation {
   constructor(audioFile, segmentationData) {
     this.audioFile = audioFile;
     this.segments = this.parseSegmentation(segmentationData);
+    this.metaDefinitions = [];
+  }
+
+  /**
+   * Parse segmentation data with meta video support
+   */
+  static async parseWithMeta(audioFile, segmentationData) {
+    let parsedData, metaDefinitions = [];
+
+    if (typeof segmentationData === 'string') {
+      // File path - read and parse
+      const fs = await import('fs-extra');
+      const fileContent = await fs.default.readFile(segmentationData, 'utf8');
+      const data = JSON.parse(fileContent);
+      
+      // Extract dialogue and meta
+      parsedData = data.dialogue || data.segments || data;
+      metaDefinitions = data.meta || [];
+    } else if (Array.isArray(segmentationData)) {
+      parsedData = segmentationData;
+    } else if (typeof segmentationData === 'object') {
+      parsedData = segmentationData.dialogue || segmentationData.segments || segmentationData;
+      metaDefinitions = segmentationData.meta || [];
+    }
+
+    const audioSegmentation = new AudioSegmentation(audioFile, parsedData);
+    audioSegmentation.metaDefinitions = metaDefinitions;
+    
+    return audioSegmentation;
   }
 
   /**

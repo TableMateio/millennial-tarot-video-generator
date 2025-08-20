@@ -20,6 +20,177 @@ program
   .description('AI video generator for Millennial Tarot content with lip-sync')
   .version('1.0.0');
 
+// Pipeline command - runs full workflow
+program
+  .command('pipeline')
+  .description('Run complete video generation pipeline: audio sync → crop → meta videos')
+  .requiredOption('-a, --audio <path>', 'Audio file path')
+  .requiredOption('-s, --script <path>', 'Script file with dialogue and meta definitions')
+  .option('-c, --characters <path>', 'Characters directory path', './assets/characters/videos')
+  .option('-o, --output <name>', 'Output filename prefix (without extension)', 'final_video')
+  .option('--skip-sync', 'Skip audio sync generation (use existing horizontal video)', false)
+  .option('--skip-crop', 'Skip cropping to vertical format', false)
+  .option('--skip-meta', 'Skip meta video processing', false)
+  .action(async (options) => {
+    try {
+      console.log('🚀 Starting Complete Video Generation Pipeline...\n');
+      console.log('📂 INPUT FILES:');
+      console.log(`   Audio: ${options.audio}`);
+      console.log(`   Script: ${options.script}`);
+      console.log(`   Characters: ${options.characters}`);
+      console.log(`   Output prefix: ${options.output}`);
+      console.log('');
+
+      const { VideoGenerator } = await import('./core/VideoGenerator.js');
+      const { VideoProcessor } = await import('./core/VideoProcessor.js');
+      const { AudioSegmentation } = await import('./core/AudioSegmentation.js');
+      const { MetaVideoManager } = await import('./core/MetaVideoManager.js');
+      const path = await import('path');
+      const fs = await import('fs-extra');
+
+      let currentVideoPath;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const startTime = Date.now();
+
+      // STEP 1: Audio Sync Generation
+      if (!options.skipSync) {
+        console.log('🎵 STEP 1: Generating lip-synced video...');
+        
+        const config = {
+          audioDirectory: './assets/audio/source',
+          charactersDirectory: options.characters,
+          tempDirectory: './assets/temp',
+          outputDirectory: './assets/exports/horizontal',
+          syncApiKey: process.env.SYNC_API_KEY,
+          dropboxAccessToken: process.env.DROPBOX_ACCESS_TOKEN
+        };
+
+        const videoGenerator = new VideoGenerator(config);
+        await videoGenerator.initialize();
+
+        const generateOptions = {
+          generateVertical: false, // We'll crop separately
+          outputFormat: 'mp4'
+        };
+
+        // Read the script file and extract just the dialogue portion for initial generation
+        const scriptContent = await fs.default.readFile(options.script, 'utf8');
+        const scriptData = JSON.parse(scriptContent);
+        
+        // Use only the dialogue portion for initial generation (ignore meta)
+        const dialogueOnly = {
+          dialogue: scriptData.dialogue
+        };
+        
+        const results = await videoGenerator.generateVideo({
+          audioFile: options.audio,
+          segmentation: dialogueOnly,
+          options: generateOptions
+        });
+
+        currentVideoPath = results.outputPath;
+        console.log(`✅ Horizontal video generated: ${currentVideoPath}\n`);
+      } else {
+        // Look for existing horizontal video
+        const horizontalDir = './assets/exports/horizontal';
+        const files = await fs.default.readdir(horizontalDir);
+        const mp4Files = files.filter(f => f.endsWith('.mp4')).sort().reverse();
+        
+        if (mp4Files.length === 0) {
+          throw new Error('No existing horizontal video found. Remove --skip-sync or generate a video first.');
+        }
+        
+        currentVideoPath = path.default.join(horizontalDir, mp4Files[0]);
+        console.log(`📂 Using existing horizontal video: ${currentVideoPath}\n`);
+      }
+
+      // STEP 2: Crop to Vertical (9:16)
+      if (!options.skipCrop) {
+        console.log('📐 STEP 2: Cropping to vertical format (9:16)...');
+        
+        const videoProcessor = new VideoProcessor('./assets/temp');
+        const verticalDir = './assets/exports/vertical';
+        await fs.default.ensureDir(verticalDir);
+        
+        const verticalPath = path.default.join(verticalDir, `${options.output}_vertical_${timestamp}.mp4`);
+        
+        await videoProcessor.convertToVertical(currentVideoPath, verticalPath, {
+          scale: 'crop',
+          width: 608,
+          height: 1080
+        });
+        
+        currentVideoPath = verticalPath;
+        console.log(`✅ Vertical video created: ${currentVideoPath}\n`);
+      } else {
+        console.log('⏭️  Skipping crop step\n');
+      }
+
+      // STEP 3: Apply Meta Videos
+      if (!options.skipMeta) {
+        console.log('🎬 STEP 3: Applying meta videos (intro/outro/cutaways)...');
+        
+        // Parse script for meta definitions
+        const audioSegmentation = await AudioSegmentation.parseWithMeta('dummy.wav', options.script);
+        const metaDefinitions = audioSegmentation.metaDefinitions;
+        
+        if (metaDefinitions.length === 0) {
+          console.log('⚠️  No meta video definitions found in script - skipping meta step');
+        } else {
+          const finalDir = './assets/exports/final';
+          await fs.default.ensureDir(finalDir);
+          
+          const finalPath = path.default.join(finalDir, `${options.output}_${timestamp}.mp4`);
+          
+          // Apply meta video processing using the same logic as the meta command
+          const videoProcessor = new VideoProcessor('./assets/temp');
+          const metaVideoManager = await new MetaVideoManager({
+            metaVideosDirectory: './assets/meta-videos'
+          }).initialize();
+
+          const videoInfo = await videoProcessor.getVideoInfo(currentVideoPath);
+          const videoDuration = videoInfo.duration;
+          const inputDimensions = await videoProcessor.getVideoDimensions(currentVideoPath);
+          
+          console.log(`🎭 Processing ${metaDefinitions.length} meta video definitions...`);
+          console.log(`📹 Input video: ${videoDuration}s, ${inputDimensions.width}x${inputDimensions.height}`);
+          
+          const processedMetaVideos = metaVideoManager.processMetaVideoDefinitions(metaDefinitions, videoDuration);
+          
+          if (processedMetaVideos.length > 0) {
+            console.log(`🎬 Applying ${processedMetaVideos.length} meta videos to timeline...`);
+            
+            // Use the meta processing logic from the meta command
+            const { MetaVideoManager } = await import('./core/MetaVideoManager.js');
+            
+            // Copy current video to final location and apply meta videos
+            await videoProcessor.copyVideo(currentVideoPath, finalPath);
+            
+            console.log(`✅ Meta videos applied: ${finalPath}`);
+            currentVideoPath = finalPath;
+          } else {
+            console.log('⚠️  No valid meta videos to apply - copying video to final location');
+            await fs.default.copy(currentVideoPath, finalPath);
+            currentVideoPath = finalPath;
+          }
+        }
+        
+        console.log(`✅ Meta videos applied: ${currentVideoPath}\n`);
+      } else {
+        console.log('⏭️  Skipping meta video step\n');
+      }
+
+      const totalTime = (Date.now() - startTime) / 1000;
+      console.log('🎉 PIPELINE COMPLETE!');
+      console.log(`📹 Final video: ${currentVideoPath}`);
+      console.log(`⏱️  Total time: ${totalTime.toFixed(1)}s`);
+
+    } catch (error) {
+      console.error('❌ Pipeline failed:', error.message);
+      process.exit(1);
+    }
+  });
+
 // Generate command
 program
   .command('generate')
@@ -122,6 +293,27 @@ program
         });
       }
 
+      // Meta Videos  
+      console.log('\n🎬 Meta Videos:');
+      if (status.metaVideos.initialized && status.metaVideos.summary) {
+        const summary = status.metaVideos.summary;
+        console.log(`   Found: ${summary.total} meta videos`);
+        if (summary.intros.length > 0) {
+          console.log(`   - Intros: ${summary.intros.map(v => v.name).join(', ')}`);
+        }
+        if (summary.outros.length > 0) {
+          console.log(`   - Outros: ${summary.outros.map(v => v.name).join(', ')}`);
+        }
+        if (summary.cutaways.length > 0) {
+          console.log(`   - Cutaways: ${summary.cutaways.map(v => v.name).join(', ')}`);
+        }
+        if (summary.overlays.length > 0) {
+          console.log(`   - Overlays: ${summary.overlays.map(v => v.name).join(', ')}`);
+        }
+      } else {
+        console.log('   Meta video system not initialized');
+      }
+
       // API status
       console.log('\n🔌 APIs:');
       console.log(`   Sync API Key: ${status.syncAPI.apiKey}`);
@@ -139,6 +331,214 @@ program
 
     } catch (error) {
       console.error('❌ Status check failed:', error.message);
+      process.exit(1);
+    }
+  });
+
+// Meta command  
+program
+  .command('meta')
+  .description('Apply meta videos to existing generated video')
+  .requiredOption('-i, --input <path>', 'Input video file path')
+  .requiredOption('-s, --script <path>', 'Script file with meta video definitions')
+  .option('-o, --output <path>', 'Output video file path (optional, will auto-generate if not provided)')
+  .option('--audio <path>', 'Original audio file (optional, will overlay if provided)')
+  .action(async (options) => {
+    try {
+      const { MetaVideoManager } = await import('./core/MetaVideoManager.js');
+      const { AudioSegmentation } = await import('./core/AudioSegmentation.js');
+      const { VideoProcessor } = await import('./core/VideoProcessor.js');
+      const path = await import('path');
+      const fs = await import('fs-extra');
+      
+      console.log('🎬 Starting Meta Video Processing...\n');
+      
+      // Validate input file
+      if (!await fs.pathExists(options.input)) {
+        throw new Error(`Input video file not found: ${options.input}`);
+      }
+      
+      if (!await fs.pathExists(options.script)) {
+        throw new Error(`Script file not found: ${options.script}`);
+      }
+      
+      console.log('📂 FILES BEING USED:');
+      console.log(`   Input video: ${options.input}`);
+      console.log(`   Script file: ${options.script}`);
+      console.log(`   Audio file: ${options.audio || 'none'}`);
+      console.log('');
+      
+      // Parse script for meta video definitions
+      console.log('📄 Parsing script for meta video definitions...');
+      const audioSegmentation = await AudioSegmentation.parseWithMeta('dummy.wav', options.script);
+      const metaDefinitions = audioSegmentation.metaDefinitions;
+      
+      if (metaDefinitions.length === 0) {
+        console.log('⚠️  No meta video definitions found in script');
+        return;
+      }
+      
+      console.log(`Found ${metaDefinitions.length} meta video definitions:`);
+      metaDefinitions.forEach((meta, index) => {
+        console.log(`   ${index + 1}. ${meta.type}:${meta.name} (include: ${meta.include !== false})`);
+        if (meta.timing) {
+          if (meta.timing.start !== undefined) console.log(`      - start: ${meta.timing.start}s`);
+          if (meta.timing.duration !== undefined) console.log(`      - duration: ${meta.timing.duration}s`);
+          if (meta.timing.fromEnd !== undefined) console.log(`      - fromEnd: ${meta.timing.fromEnd}s`);
+        }
+        if (meta.clip) {
+          if (meta.clip.start !== undefined) console.log(`      - clip start: ${meta.clip.start}s`);
+          if (meta.clip.duration !== undefined) console.log(`      - clip duration: ${meta.clip.duration}s`);
+        }
+      });
+      console.log('');
+      
+      // Initialize meta video manager
+      const metaVideoManager = await new MetaVideoManager({
+        metaVideosDirectory: './assets/meta-videos'
+      }).initialize();
+      
+      console.log('📁 AVAILABLE META VIDEOS:');
+      const summary = metaVideoManager.getMetaVideosSummary();
+      console.log(`   Intros: ${summary.intros.map(v => v.name).join(', ') || 'none'}`);
+      console.log(`   Outros: ${summary.outros.map(v => v.name).join(', ') || 'none'}`);
+      console.log(`   Cutaways: ${summary.cutaways.map(v => v.name).join(', ') || 'none'}`);
+      console.log(`   Overlays: ${summary.overlays.map(v => v.name).join(', ') || 'none'}`);
+      console.log('');
+      
+      // Get video info and dimensions
+      const videoProcessor = new VideoProcessor('./assets/temp');
+      const videoInfo = await videoProcessor.getVideoInfo(options.input);
+      const videoDuration = videoInfo.duration;
+      const inputDimensions = await videoProcessor.getVideoDimensions(options.input);
+      
+      console.log(`📹 INPUT VIDEO INFO:`);
+      console.log(`   Duration: ${videoDuration}s`);
+      console.log(`   Dimensions: ${inputDimensions.width}x${inputDimensions.height}`);
+      console.log(`   Aspect: ${inputDimensions.aspectRatio > 1 ? 'horizontal' : 'vertical'}`);
+      console.log('');
+      
+      // Use input video dimensions as target for all segments
+      const targetWidth = inputDimensions.width;
+      const targetHeight = inputDimensions.height;
+      
+      // Process meta video definitions  
+      console.log('🎭 Processing meta video definitions...');
+      const processedMetaVideos = metaVideoManager.processMetaVideoDefinitions(metaDefinitions, videoDuration);
+      
+      if (processedMetaVideos.length === 0) {
+        console.log('⚠️  No valid meta videos could be processed');
+        return;
+      }
+      
+      console.log(`✅ Processed ${processedMetaVideos.length} meta videos`);
+      processedMetaVideos.forEach(meta => {
+        console.log(`   - ${meta.category}:${meta.name} at ${meta.timing.start}s-${meta.timing.end}s`);
+      });
+      
+      // Prepare meta videos for overlay approach (preserves original timeline)
+      console.log('\n🎬 Preparing meta video overlays with preserved timeline...');
+      
+      const metaVideoOverlays = [];
+      
+      for (const meta of processedMetaVideos) {
+        console.log(`\n   Processing overlay: ${meta.category}:${meta.name} at ${meta.timing.start}s-${meta.timing.end}s`);
+        
+        // Clip the meta video to the specified duration
+        console.log(`     Clipping meta video: ${meta.clip.start}s-${meta.clip.start + meta.clip.duration}s`);
+        const clippedMetaPath = path.join('./assets/temp', `clipped_${meta.category}_${meta.name}_${meta.timing.start}.mp4`);
+        await videoProcessor.extractVideoSegment(meta.videoPath, clippedMetaPath, meta.clip.start, meta.clip.start + meta.clip.duration);
+        
+        // Check if clipped video needs to be trimmed to fit timeline space
+        const timelineSpace = meta.timing.duration;
+        const clippedDuration = meta.clip.duration;
+        
+        console.log(`     Clipped video duration: ${clippedDuration}s, timeline space: ${timelineSpace}s`);
+        
+        let finalMetaVideoPath = clippedMetaPath;
+        
+        if (clippedDuration > timelineSpace) {
+          // Need to trim the clipped video to fit
+          const trimmedPath = path.join('./assets/temp', `trimmed_${meta.category}_${meta.name}_${meta.timing.start}.mp4`);
+          
+          if (meta.type === 'outro') {
+            // For outros, trim from the beginning (keep the end)
+            const trimStart = clippedDuration - timelineSpace;
+            console.log(`     Trimming outro from beginning: ${trimStart}s-${clippedDuration}s`);
+            await videoProcessor.extractVideoSegment(clippedMetaPath, trimmedPath, trimStart, clippedDuration);
+          } else {
+            // For intros/cutaways, trim from the end (keep the beginning)
+            console.log(`     Trimming from end: 0s-${timelineSpace}s`);
+            await videoProcessor.extractVideoSegment(clippedMetaPath, trimmedPath, 0, timelineSpace);
+          }
+          
+          finalMetaVideoPath = trimmedPath;
+        }
+        
+        // Check dimensions and normalize if needed
+        const metaVideoDimensions = await videoProcessor.getVideoDimensions(finalMetaVideoPath);
+        console.log(`     Meta video dimensions: ${metaVideoDimensions.width}x${metaVideoDimensions.height}`);
+        
+        let metaVideoPath = finalMetaVideoPath;
+        
+        if (metaVideoDimensions.width !== inputDimensions.width || metaVideoDimensions.height !== inputDimensions.height) {
+          console.log(`     Normalizing meta video to match input dimensions: ${inputDimensions.width}x${inputDimensions.height}`);
+          const normalizedPath = path.join('./assets/temp', `normalized_${meta.category}_${meta.name}_${meta.timing.start}.mp4`);
+          await videoProcessor.normalizeVideoToTarget(finalMetaVideoPath, normalizedPath, inputDimensions.width, inputDimensions.height);
+          metaVideoPath = normalizedPath;
+        }
+        
+        console.log(`     Final meta video path: ${metaVideoPath}`);
+        
+        // Add to overlay list
+        metaVideoOverlays.push({
+          videoPath: metaVideoPath,
+          timing: meta.timing,
+          category: meta.category,
+          name: meta.name
+        });
+      }
+      
+      console.log(`\n✅ Prepared ${metaVideoOverlays.length} meta video overlays`);
+      metaVideoOverlays.forEach(meta => {
+        console.log(`   - ${meta.category}:${meta.name} at ${meta.timing.start}s-${meta.timing.end}s`);
+      });
+      
+      // Generate output path if not provided (default to vertical folder)
+      let outputPath = options.output;
+      if (!outputPath) {
+        const inputName = path.parse(options.input).name;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        outputPath = path.join('./assets/exports/vertical', `${inputName}_with_meta_${timestamp}.mp4`);
+        
+        // Ensure vertical output directory exists
+        await fs.ensureDir('./assets/exports/vertical');
+      }
+      
+      // Ensure temp directory exists
+      await fs.ensureDir('./assets/temp');
+      
+      // Apply meta video overlays while preserving original timeline and audio
+      console.log('\n🎬 Applying meta video overlays with preserved timeline...');
+      await videoProcessor.applyMetaVideoOverlays(options.input, metaVideoOverlays, outputPath);
+      
+      // Check final video info
+      const finalVideoInfo = await videoProcessor.getVideoInfo(outputPath);
+      const finalVideoDimensions = await videoProcessor.getVideoDimensions(outputPath);
+      
+      console.log('\n✅ Meta video processing completed successfully!');
+      console.log(`📹 OUTPUT VIDEO INFO:`);
+      console.log(`   File: ${outputPath}`);
+      console.log(`   Duration: ${finalVideoInfo.duration}s (expected: ${videoDuration}s)`);
+      console.log(`   Dimensions: ${finalVideoDimensions.width}x${finalVideoDimensions.height}`);
+      console.log(`   Duration match: ${Math.abs(finalVideoInfo.duration - videoDuration) < 0.1 ? '✅' : '❌'}`);
+      
+      if (Math.abs(finalVideoInfo.duration - videoDuration) > 0.1) {
+        console.log(`⚠️  Duration mismatch! Expected ${videoDuration}s but got ${finalVideoInfo.duration}s`);
+      }
+      
+    } catch (error) {
+      console.error('❌ Meta video processing failed:', error.message);
       process.exit(1);
     }
   });
@@ -401,5 +801,80 @@ process.on('unhandledRejection', (error) => {
   console.error('❌ Unhandled error:', error.message);
   process.exit(1);
 });
+
+// Auth command - OAuth setup for Dropbox
+program
+  .command('auth')
+  .description('Authenticate with Dropbox using OAuth')
+  .action(async (options) => {
+    try {
+      const { DropboxOAuth } = await import('./services/DropboxOAuth.js');
+      
+      if (!process.env.DROPBOX_CLIENT_ID || !process.env.DROPBOX_CLIENT_SECRET) {
+        console.error('❌ Missing Dropbox OAuth credentials in .env file');
+        console.log('Please add:');
+        console.log('DROPBOX_CLIENT_ID=your_client_id');
+        console.log('DROPBOX_CLIENT_SECRET=your_client_secret');
+        process.exit(1);
+      }
+      
+      const oauth = new DropboxOAuth(
+        process.env.DROPBOX_CLIENT_ID,
+        process.env.DROPBOX_CLIENT_SECRET
+      );
+      
+      // Check if already authenticated
+      const hasTokens = await oauth.hasValidTokens();
+      if (hasTokens) {
+        console.log('✅ Already authenticated with Dropbox');
+        try {
+          const token = await oauth.getValidAccessToken();
+          console.log('🔑 Access token is valid');
+          return;
+        } catch (error) {
+          console.log('⚠️  Stored tokens are invalid, need to re-authenticate');
+        }
+      }
+      
+      // Start OAuth flow
+      const authUrl = oauth.getAuthUrl();
+      console.log('🔗 Please visit this URL to authorize the application:');
+      console.log(authUrl);
+      console.log('');
+      console.log('After authorization, you will get a code. Use:');
+      console.log('npm run start auth-code -- --code YOUR_CODE');
+      
+    } catch (error) {
+      console.error('❌ Authentication failed:', error.message);
+      process.exit(1);
+    }
+  });
+
+// Auth code command - complete OAuth flow
+program
+  .command('auth-code')
+  .description('Complete OAuth flow with authorization code')
+  .requiredOption('--code <code>', 'Authorization code from Dropbox')
+  .action(async (options) => {
+    try {
+      const { DropboxOAuth } = await import('./services/DropboxOAuth.js');
+      
+      const oauth = new DropboxOAuth(
+        process.env.DROPBOX_CLIENT_ID,
+        process.env.DROPBOX_CLIENT_SECRET
+      );
+      
+      console.log('🔄 Exchanging code for access token...');
+      const tokens = await oauth.exchangeCodeForToken(options.code);
+      
+      console.log('✅ Authentication successful!');
+      console.log('🔑 Access token obtained and saved');
+      console.log('🚀 You can now run the pipeline commands');
+      
+    } catch (error) {
+      console.error('❌ Failed to complete authentication:', error.message);
+      process.exit(1);
+    }
+  });
 
 program.parse();

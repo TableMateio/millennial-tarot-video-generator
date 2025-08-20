@@ -125,6 +125,42 @@ export class VideoProcessor {
   }
 
   /**
+   * Extract video segment from video file
+   */
+  async extractVideoSegment(inputVideoPath, outputVideoPath, startTime, endTime) {
+    const duration = endTime - startTime;
+    
+    return new Promise((resolve, reject) => {
+      console.log(`🎬 Extracting video segment: ${startTime}s-${endTime}s (${duration}s)`);
+      
+      ffmpeg(inputVideoPath)
+        .seekInput(startTime)
+        .duration(duration)
+        .outputOptions([
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-preset', 'medium',
+          '-crf', '23',
+          '-r', '24',                    // Force 24fps for all segments
+          '-avoid_negative_ts', 'make_zero'  // Handle timestamp issues
+        ])
+        .output(outputVideoPath)
+        .on('start', (commandLine) => {
+          console.log(`FFmpeg extract: ${commandLine}`);
+        })
+        .on('end', () => {
+          console.log(`✅ Video segment extracted: ${outputVideoPath}`);
+          resolve(outputVideoPath);
+        })
+        .on('error', (error) => {
+          console.error(`❌ Video extraction failed: ${error.message}`);
+          reject(error);
+        })
+        .run();
+    });
+  }
+
+  /**
    * Extract audio segment from larger audio file
    */
   async extractAudioSegment(inputAudioPath, outputAudioPath, startTime, endTime) {
@@ -199,7 +235,12 @@ export class VideoProcessor {
         command.fps(options.frameRate);
       }
 
-      command
+              command
+        .outputOptions([
+          '-avoid_negative_ts', 'make_zero',  // Handle timestamp issues
+          '-fflags', '+genpts',               // Generate timestamps
+          '-r', '24'                          // Force consistent frame rate
+        ])
         .output(outputPath)
         .on('start', (commandLine) => {
           console.log('Starting video concatenation...');
@@ -373,6 +414,66 @@ export class VideoProcessor {
   /**
    * Get video information (duration, resolution, format, etc.)
    */
+  /**
+   * Get video dimensions (width, height)
+   */
+  async getVideoDimensions(videoPath) {
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(videoPath, (err, metadata) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        
+        const videoStream = metadata.streams.find(stream => stream.codec_type === 'video');
+        if (!videoStream) {
+          reject(new Error('No video stream found'));
+          return;
+        }
+        
+        resolve({
+          width: videoStream.width,
+          height: videoStream.height,
+          aspectRatio: videoStream.width / videoStream.height
+        });
+      });
+    });
+  }
+
+  /**
+   * Normalize video to match target dimensions
+   */
+  async normalizeVideoToTarget(inputPath, outputPath, targetWidth, targetHeight) {
+    console.log(`📐 Normalizing video to ${targetWidth}x${targetHeight}`);
+    
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .videoFilters([
+          `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease`,
+          `pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black`
+        ])
+        .outputOptions([
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-preset', 'medium',
+          '-crf', '23'
+        ])
+        .output(outputPath)
+        .on('start', (commandLine) => {
+          console.log(`FFmpeg normalize: ${commandLine}`);
+        })
+        .on('end', () => {
+          console.log(`✅ Video normalized: ${outputPath}`);
+          resolve(outputPath);
+        })
+        .on('error', (error) => {
+          console.error(`❌ Video normalization failed: ${error.message}`);
+          reject(error);
+        })
+        .run();
+    });
+  }
+
   async getVideoInfo(videoPath) {
     return new Promise((resolve, reject) => {
       ffmpeg.ffprobe(videoPath, (error, metadata) => {
@@ -626,6 +727,109 @@ export class VideoProcessor {
         })
         .on('error', (error) => {
           console.error(`Transition creation failed: ${error.message}`);
+          reject(error);
+        })
+        .run();
+    });
+  }
+
+  /**
+   * Overlay original audio from one video onto another video
+   */
+  async overlayOriginalAudioFromVideo(videoPath, audioSourceVideoPath, outputPath) {
+    console.log(`🎵 Overlaying original audio from source video...`);
+    console.log(`📹 Video: ${path.basename(videoPath)}`);
+    console.log(`🎵 Audio source: ${path.basename(audioSourceVideoPath)}`);
+    
+    return new Promise((resolve, reject) => {
+      ffmpeg(videoPath)
+        .input(audioSourceVideoPath)
+        .outputOptions([
+          '-c:v', 'copy',
+          '-c:a', 'aac',
+          '-map', '0:v:0',
+          '-map', '1:a:0',
+          '-shortest'
+        ])
+        .output(outputPath)
+        .on('start', (commandLine) => {
+          console.log(`FFmpeg audio overlay: ${commandLine}`);
+        })
+        .on('end', () => {
+          console.log(`✅ Audio overlay completed: ${outputPath}`);
+          resolve(outputPath);
+        })
+        .on('error', (error) => {
+          console.error(`❌ Audio overlay failed: ${error.message}`);
+          reject(error);
+        })
+        .run();
+    });
+  }
+
+  /**
+   * Apply meta videos as true overlays at specific timestamps, preserving original timeline
+   */
+  async applyMetaVideoOverlays(baseVideoPath, metaVideos, outputPath) {
+    console.log(`🎬 Applying ${metaVideos.length} meta video overlays with preserved timeline...`);
+    
+    if (metaVideos.length === 0) {
+      // No meta videos to apply, just copy the original
+      await this.copyVideo(baseVideoPath, outputPath);
+      return outputPath;
+    }
+    
+    return new Promise((resolve, reject) => {
+      const command = ffmpeg(baseVideoPath);
+      
+      // Add each meta video as an input
+      metaVideos.forEach(meta => {
+        command.input(meta.videoPath);
+      });
+      
+      // Build filter_complex for overlays
+      let filterComplex = '[0:v]copy[base]'; // Start with base video
+      let currentInput = 'base';
+      
+      metaVideos.forEach((meta, index) => {
+        const inputIndex = index + 1; // +1 because base video is input 0
+        const outputLabel = index === metaVideos.length - 1 ? 'final' : `overlay${index}`;
+        
+        // Create overlay filter: [current][input:v]overlay=enable='between(t,start,end)'[output]
+        filterComplex += `;[${currentInput}][${inputIndex}:v]overlay=enable='between(t,${meta.timing.start},${meta.timing.end})'[${outputLabel}]`;
+        currentInput = outputLabel;
+      });
+      
+      console.log(`🔧 Filter complex: ${filterComplex}`);
+      
+      command
+        .complexFilter(filterComplex)
+        .outputOptions([
+          '-map', '[final]',
+          '-map', '0:a', // Keep original audio
+          '-c:a', 'aac',
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-crf', '23',
+          '-r', '24',
+          '-avoid_negative_ts', 'make_zero',
+          '-fflags', '+genpts'
+        ])
+        .output(outputPath)
+        .on('start', (commandLine) => {
+          console.log(`FFmpeg overlay command: ${commandLine}`);
+        })
+        .on('progress', (progress) => {
+          if (progress.percent) {
+            console.log(`📊 Meta overlay progress: ${Math.round(progress.percent)}%`);
+          }
+        })
+        .on('end', () => {
+          console.log(`✅ Meta video overlays completed: ${outputPath}`);
+          resolve(outputPath);
+        })
+        .on('error', (error) => {
+          console.error(`❌ Meta overlay failed: ${error.message}`);
           reject(error);
         })
         .run();
